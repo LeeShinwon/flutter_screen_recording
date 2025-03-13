@@ -24,6 +24,12 @@ import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
 import java.io.IOException
 
+import android.graphics.Bitmap
+import android.media.Image
+import android.media.ImageReader
+import androidx.annotation.RequiresApi
+import java.nio.ByteBuffer
+
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -37,6 +43,9 @@ class FlutterScreenRecordingPlugin :
 
     private var mScreenDensity: Int = 0
     var mMediaRecorder: MediaRecorder? = null
+    private var mImageReader: ImageReader? = null
+    private var channel: MethodChannel? = null
+
     val mProjectionManager: MediaProjectionManager by lazy {
         ContextCompat.getSystemService(
             pluginBinding!!.applicationContext,
@@ -252,12 +261,34 @@ class FlutterScreenRecordingPlugin :
             mMediaRecorder?.prepare()
             mMediaRecorder?.start()
 
+            // 이미지 리더 설정
+            mImageReader = ImageReader.newInstance(mDisplayWidth, mDisplayHeight, 0x1, 2)
+            mImageReader?.setOnImageAvailableListener({ reader ->
+                val image: Image = reader.acquireLatestImage()
+                sendImageToFlutter(image)
+            }, null)
+
+            mVirtualDisplay = createVirtualDisplay()
+
         } catch (e: Exception) {
             Log.d("--INIT-RECORDER", e.message + "")
             println("Error startRecordScreen")
             println(e.message)
         }
 
+    }
+
+    // 이미지를 Flutter로 스트리밍하는 메소드
+    private fun sendImageToFlutter(image: Image) {
+        val planes = image.planes
+        val buffer: ByteBuffer = planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+
+        // Flutter로 ByteArray 형태로 이미지 전송
+        channel?.invokeMethod("onImageCaptured", bytes)
+
+        image.close()
     }
 
     private fun stopRecordScreen() {
