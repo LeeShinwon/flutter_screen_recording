@@ -31,7 +31,9 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
+    namespace "com.isvisoft.flutter_screen_recording"  // 추가된 namespace
     compileSdkVersion 34
+    ndkVersion = "27.0.12077973"
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
