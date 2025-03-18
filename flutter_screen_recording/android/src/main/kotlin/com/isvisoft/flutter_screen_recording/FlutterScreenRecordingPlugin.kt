@@ -20,6 +20,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
 
 class FlutterScreenRecordingPlugin :
     MethodChannel.MethodCallHandler,
@@ -150,6 +151,13 @@ class FlutterScreenRecordingPlugin :
         mVirtualDisplay?.release()
         audioRecordInternal?.stop()
         audioRecordInternal?.release()
+
+        val pcmFile = File(mFileName!!.replace(".mp4", ".pcm"))
+        val wavFile = File(mFileName!!.replace(".mp4", ".wav"))
+        convertPcmToWav(pcmFile, wavFile)
+
+        val outputFile = File(mFileName!!.replace(".mp4", "_final.mp4"))
+        mergeAudioVideo(File(mFileName!!), wavFile, outputFile)
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
