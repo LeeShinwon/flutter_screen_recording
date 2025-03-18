@@ -62,6 +62,13 @@ class FlutterScreenRecordingPlugin :
 
     private var serviceConnection: ServiceConnection? = null
 
+    // 오디오 추가
+    private var audioRecordInternal: AudioRecord? = null
+    private var audioEncoder: MediaCodec? = null
+    private var audioFileName: String? = null
+    private val SAMPLE_RATE = 44100
+    private var isRecordingAudio = false
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
 
         val context = pluginBinding!!.applicationContext
@@ -177,6 +184,68 @@ class FlutterScreenRecordingPlugin :
         }
     }
 
+
+    private fun startInternalAudioCapture() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            Log.e("ScreenRecording", "Internal audio capture is only supported on Android 10+")
+            return
+        }
+
+        val BUFFER_SIZE = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+
+        val config = AudioPlaybackCaptureConfiguration.Builder(mMediaProjection!!)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)  // 미디어 오디오만 캡처
+            .build()
+
+        audioRecordInternal = AudioRecord.Builder()
+            .setAudioPlaybackCaptureConfig(config)
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                    .build()
+            )
+            .setBufferSizeInBytes(BUFFER_SIZE)
+            .build()
+
+        // 🔹 오디오 파일 저장 경로 설정
+        audioFileName = pluginBinding!!.applicationContext.externalCacheDir?.absolutePath + "/$videoName.aac"
+
+        // 🔹 AAC 인코더 설정
+        audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm")
+        val audioFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", SAMPLE_RATE, 2)
+        audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+        audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+        audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, BUFFER_SIZE)
+        audioEncoder?.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        audioEncoder?.start()
+
+        isRecordingAudio = true
+        audioRecordInternal?.startRecording()
+
+        // 🔹 PCM 데이터를 AAC로 변환 및 저장
+        Thread { encodeAudioToAAC() }.start()
+    }
+
+    private fun encodeAudioToAAC() {
+        val buffer = ByteArray(1024)
+        val outputStream = FileOutputStream(audioFileName)
+
+        while (isRecordingAudio) {
+            val read = audioRecordInternal?.read(buffer, 0, buffer.size) ?: 0
+            if (read > 0) {
+                outputStream.write(buffer, 0, read)
+            }
+        }
+
+        outputStream.close()
+    }
+
     private fun calculateResolution(metrics: DisplayMetrics) {
         // ✅ 원본 해상도 그대로 사용
         mDisplayHeight = metrics.heightPixels
@@ -219,6 +288,7 @@ class FlutterScreenRecordingPlugin :
             mMediaRecorder?.prepare()
             mMediaRecorder?.start()
 
+            startInternalAudioCapture()
         } catch (e: Exception) {
             Log.d("--INIT-RECORDER", e.message + "")
             println("Error startRecordScreen")
@@ -241,6 +311,13 @@ class FlutterScreenRecordingPlugin :
 
         } finally {
             stopScreenSharing()
+
+            // 🔹 내부 오디오 녹음 종료
+            isRecordingAudio = false
+            audioRecordInternal?.stop()
+            audioRecordInternal?.release()
+            audioEncoder?.stop()
+            audioEncoder?.release()
         }
     }
 
