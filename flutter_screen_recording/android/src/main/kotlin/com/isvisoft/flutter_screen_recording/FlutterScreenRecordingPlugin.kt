@@ -96,11 +96,12 @@ class FlutterScreenRecordingPlugin :
                     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
 
                         try {
-                            startRecordScreen()
                             mMediaProjectionCallback = MediaProjectionCallback()
                             mMediaProjection = mProjectionManager.getMediaProjection(resultCode, data!!)
                             mMediaProjection?.registerCallback(mMediaProjectionCallback!!, null)
                             mVirtualDisplay = createVirtualDisplay()
+
+                            startRecordScreen()
                             _result.success(true)
 
                         } catch (e: Throwable) {
