@@ -362,20 +362,76 @@ class FlutterScreenRecordingPlugin :
                 Log.e("ScreenRecording", "🚨 Error stopping audio encoder: ${e.message}")
             }
 
-            // 🔹 MediaRecorder 중지
+            // 🔹 MediaRecorder 중지 (오디오 먼저 중지한 후 실행)
             if (mMediaRecorder != null) {
-                mMediaRecorder?.stop()  // 여기서 -1007 오류 발생 가능
-                mMediaRecorder?.reset()
-                println("stopRecordScreen success")
+                try {
+                    mMediaRecorder?.stop()
+                    mMediaRecorder?.reset()
+                    println("✅ stopRecordScreen success")
+                } catch (e: Exception) {
+                    Log.e("ScreenRecording", "🚨 MediaRecorder stop failed: ${e.message}")
+                }
             }
 
         } catch (e: Exception) {
-            Log.e("ScreenRecording", "🚨 MediaRecorder stop failed: ${e.message}")
-            println("stopRecordScreen error")
+            Log.e("ScreenRecording", "🚨 stopRecordScreen failed: ${e.message}")
         } finally {
             stopScreenSharing()
+
+            // 🔹 백그라운드에서 오디오 파일 변환 실행
+            Thread {
+                finalizeAudioRecording()
+            }.start()
         }
     }
+
+
+    private fun finalizeAudioRecording() {
+        try {
+            val outputFile = File(audioFileName)
+            if (!outputFile.exists()) {
+                Log.e("ScreenRecording", "🚨 Audio file not found!")
+                return
+            }
+
+            val extractor = MediaExtractor()
+            extractor.setDataSource(audioFileName!!)  // 원본 .aac 파일
+
+            val format = extractor.getTrackFormat(0)
+            val muxer = MediaMuxer(audioFileName!!.replace(".aac", ".m4a"), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
+            val trackIndex = muxer.addTrack(format)
+            muxer.start()
+
+            val buffer = ByteBuffer.allocate(1024 * 1024)
+            val bufferInfo = MediaCodec.BufferInfo()
+
+            extractor.selectTrack(0)
+            while (true) {
+                val sampleSize = extractor.readSampleData(buffer, 0)
+                if (sampleSize < 0) break
+
+                bufferInfo.offset = 0
+                bufferInfo.size = sampleSize
+                bufferInfo.presentationTimeUs = extractor.sampleTime
+                bufferInfo.flags = extractor.sampleFlags
+
+                muxer.writeSampleData(trackIndex, buffer, bufferInfo)
+                extractor.advance()
+            }
+
+            muxer.stop()
+            muxer.release()
+            extractor.release()
+
+            Log.i("ScreenRecording", "✅ Audio file properly formatted: ${audioFileName!!.replace(".aac", ".m4a")}")
+
+        } catch (e: Exception) {
+            Log.e("ScreenRecording", "🚨 Error formatting audio file: ${e.message}")
+        }
+    }
+
+
 
 
     private fun createVirtualDisplay(): VirtualDisplay? {
