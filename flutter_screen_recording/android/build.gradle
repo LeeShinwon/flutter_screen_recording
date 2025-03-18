@@ -59,7 +59,6 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation 'androidx.appcompat:appcompat:1.6.0'
     implementation 'com.github.HBiSoft:HBRecorder:2.0.5'
-    implementation 'com.writingminds:FFmpegAndroid:0.3.2'
 
 
     // Flutter dependencies

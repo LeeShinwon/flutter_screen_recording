@@ -20,12 +20,13 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
+import java.util.concurrent.LinkedBlockingQueue
 
 class FlutterScreenRecordingPlugin :
     MethodChannel.MethodCallHandler,
-    PluginRegistry.ActivityResultListener,
     FlutterPlugin,
     ActivityAware {
 
@@ -34,14 +35,15 @@ class FlutterScreenRecordingPlugin :
     private var mVirtualDisplay: VirtualDisplay? = null
     private var mMediaRecorder: MediaRecorder? = null
     private var audioRecordInternal: AudioRecord? = null
+    private var audioEncoder: MediaCodec? = null
+    private var muxer: MediaMuxer? = null
     private var isRecording = false
 
     private var mDisplayWidth: Int = 0
     private var mDisplayHeight: Int = 0
     private var mScreenDensity: Int = 0
     private var videoName: String? = ""
-    private var mVideoFileName: String? = "" // 영상 파일 이름
-    private var mAudioFileName: String? = "" // 오디오 파일 이름
+    private var mVideoFileName: String? = "" // 임시 영상 파일 이름
     private var mFinalFileName: String? = "" // 최종 병합 파일 이름
 
     private lateinit var _result: MethodChannel.Result
@@ -49,6 +51,10 @@ class FlutterScreenRecordingPlugin :
     private var activityBinding: ActivityPluginBinding? = null
 
     private val SCREEN_RECORD_REQUEST_CODE = 333
+    private val SAMPLE_RATE = 44100
+    private val audioQueue = LinkedBlockingQueue<ByteArray>()
+    private val encodedAudioQueue = LinkedBlockingQueue<Pair<ByteBuffer, MediaCodec.BufferInfo>>()
+    private var recordingStartTime: Long = 0
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -60,7 +66,6 @@ class FlutterScreenRecordingPlugin :
             }
             "stopRecordScreen" -> {
                 stopRecordScreen()
-                mergeVideoAndAudio()
                 result.success(mFinalFileName)
             }
             else -> result.notImplemented()
@@ -70,11 +75,10 @@ class FlutterScreenRecordingPlugin :
     private fun setupDisplayMetrics() {
         val metrics = DisplayMetrics()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            activityBinding!!.activity.display?.getRealMetrics(metrics)
+            activityBinding?.activity?.display?.getRealMetrics(metrics)
         } else {
             @SuppressLint("NewApi")
-            val defaultDisplay = pluginBinding!!.applicationContext.display
-            defaultDisplay?.getMetrics(metrics)
+            pluginBinding?.applicationContext?.display?.getMetrics(metrics)
         }
         mScreenDensity = metrics.densityDpi
         mDisplayWidth = metrics.widthPixels
@@ -87,28 +91,14 @@ class FlutterScreenRecordingPlugin :
             MediaProjectionManager::class.java
         ) ?: throw Exception("MediaProjectionManager not found")
         val permissionIntent = mProjectionManager!!.createScreenCaptureIntent()
-        ActivityCompat.startActivityForResult(
-            activityBinding!!.activity, permissionIntent, SCREEN_RECORD_REQUEST_CODE, null
-        )
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
-        if (requestCode == SCREEN_RECORD_REQUEST_CODE) {
-            if (resultCode == Activity.RESULT_OK) {
-                startRecordScreen(resultCode, data!!)
-                _result.success(true)
-            } else {
-                _result.success(false)
-            }
-            return true
+        activityBinding?.activity?.let {
+            ActivityCompat.startActivityForResult(it, permissionIntent, SCREEN_RECORD_REQUEST_CODE, null)
         }
-        return false
     }
 
     private fun startRecordScreen(resultCode: Int, data: Intent) {
         mMediaProjection = mProjectionManager!!.getMediaProjection(resultCode, data)
         mVideoFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}_video.mp4"
-        mAudioFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}_audio.pcm"
         mFinalFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}.mp4"
 
         // 영상만 녹화
@@ -132,12 +122,16 @@ class FlutterScreenRecordingPlugin :
 
         mVirtualDisplay = createVirtualDisplay()
 
-        // 내부 오디오 캡처 시작
+        // MediaMuxer 초기화
+        muxer = MediaMuxer(mFinalFileName!!, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
+        // 내부 오디오 캡처 및 인코딩 시작
+        recordingStartTime = System.nanoTime() / 1000
         startInternalAudioCapture()
     }
 
-    private fun createVirtualDisplay(): VirtualDisplay {
-        return mMediaProjection!!.createVirtualDisplay(
+    private fun createVirtualDisplay(): VirtualDisplay? {
+        return mMediaProjection?.createVirtualDisplay(
             "ScreenRecording",
             mDisplayWidth,
             mDisplayHeight,
@@ -155,7 +149,6 @@ class FlutterScreenRecordingPlugin :
             return
         }
 
-        val SAMPLE_RATE = 44100
         val BUFFER_SIZE = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_STEREO,
@@ -178,25 +171,93 @@ class FlutterScreenRecordingPlugin :
             .setBufferSizeInBytes(BUFFER_SIZE)
             .build()
 
+        // AAC 인코더 설정
+        audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm")
+        val audioFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", SAMPLE_RATE, 2)
+        audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+        audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+        audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, BUFFER_SIZE)
+        audioEncoder?.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val audioTrackIndex = muxer?.addTrack(audioFormat) ?: -1
+        audioEncoder?.start()
+
         isRecording = true
         audioRecordInternal?.startRecording()
 
+        // PCM 데이터를 인코딩 및 muxing
         Thread {
             val buffer = ByteArray(BUFFER_SIZE)
-            val outputFile = File(mAudioFileName!!)
-            try {
-                val outputStream = outputFile.outputStream()
-                while (isRecording) {
-                    val read = audioRecordInternal?.read(buffer, 0, BUFFER_SIZE) ?: 0
-                    if (read > 0) {
-                        outputStream.write(buffer, 0, read)
-                    }
+            while (isRecording) {
+                val read = audioRecordInternal?.read(buffer, 0, BUFFER_SIZE) ?: 0
+                if (read > 0) {
+                    audioQueue.offer(buffer.copyOf(read))
                 }
-                outputStream.close()
-            } catch (e: IOException) {
-                Log.e("ScreenRecording", "Error writing audio file", e)
             }
         }.start()
+
+        Thread {
+            encodeAudioToAAC(audioTrackIndex)
+        }.start()
+
+        // 영상 데이터 muxing 준비
+        Thread { muxVideo(audioTrackIndex) }.start()
+    }
+
+    private fun encodeAudioToAAC(audioTrackIndex: Int) {
+        val bufferInfo = MediaCodec.BufferInfo()
+        while (isRecording || !audioQueue.isEmpty()) {
+            val inputBufferIndex = audioEncoder?.dequeueInputBuffer(10000) ?: -1
+            if (inputBufferIndex >= 0) {
+                val inputBuffer = audioEncoder?.getInputBuffer(inputBufferIndex)
+                val pcmData = audioQueue.poll()
+                if (pcmData != null) {
+                    inputBuffer?.clear()
+                    inputBuffer?.put(pcmData)
+                    val presentationTimeUs = (System.nanoTime() / 1000) - recordingStartTime
+                    audioEncoder?.queueInputBuffer(inputBufferIndex, 0, pcmData.size, presentationTimeUs, 0)
+                }
+            }
+
+            val outputBufferIndex = audioEncoder?.dequeueOutputBuffer(bufferInfo, 10000) ?: -1
+            if (outputBufferIndex >= 0) {
+                val outputBuffer = audioEncoder?.getOutputBuffer(outputBufferIndex)
+                if (bufferInfo.size > 0 && muxer != null) {
+                    muxer?.writeSampleData(audioTrackIndex, outputBuffer!!, bufferInfo)
+                }
+                audioEncoder?.releaseOutputBuffer(outputBufferIndex, false)
+            }
+        }
+    }
+
+    private fun muxVideo(audioTrackIndex: Int) {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(mVideoFileName!!)
+        var videoTrackIndex = -1
+
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            if (format.getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true) {
+                extractor.selectTrack(i)
+                videoTrackIndex = muxer?.addTrack(format) ?: -1
+                break
+            }
+        }
+
+        muxer?.start()
+
+        val videoBuffer = ByteBuffer.allocate(1024 * 1024)
+        val videoBufferInfo = MediaCodec.BufferInfo()
+        while (true) {
+            val sampleSize = extractor.readSampleData(videoBuffer, 0)
+            if (sampleSize < 0) break
+            videoBufferInfo.size = sampleSize
+            videoBufferInfo.presentationTimeUs = extractor.sampleTime
+            videoBufferInfo.flags = extractor.sampleFlags
+            muxer?.writeSampleData(videoTrackIndex, videoBuffer, videoBufferInfo)
+            extractor.advance()
+        }
+
+        extractor.release()
     }
 
     private fun stopRecordScreen() {
@@ -208,58 +269,13 @@ class FlutterScreenRecordingPlugin :
         mMediaProjection?.stop()
         audioRecordInternal?.stop()
         audioRecordInternal?.release()
-    }
+        audioEncoder?.stop()
+        audioEncoder?.release()
+        muxer?.stop()
+        muxer?.release()
 
-    // FFmpeg를 사용하여 영상과 오디오 병합 (예시)
-    private fun mergeVideoAndAudio() {
-        try {
-            val audioWavFile = File(mAudioFileName!!.replace(".pcm", ".wav"))
-            convertPcmToWav(File(mAudioFileName!!), audioWavFile)
-
-            // FFmpeg 명령어 실행 (FFmpeg 라이브러리 필요)
-            val ffmpegCommand = arrayOf(
-                "-i", mVideoFileName!!,
-                "-i", audioWavFile.absolutePath,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                mFinalFileName!!
-            )
-            // FFmpeg 실행 로직은 별도로 추가해야 함 (예: FFmpeg-Android-Java 라이브러리 사용)
-            Log.d("ScreenRecording", "Merging video and audio: $mFinalFileName")
-        } catch (e: Exception) {
-            Log.e("ScreenRecording", "Error merging video and audio", e)
-        }
-    }
-
-    private fun convertPcmToWav(pcmFile: File, wavFile: File) {
-        val pcmData = pcmFile.readBytes()
-        val totalDataLen = pcmData.size + 44 - 8
-        val byteRate = 44100 * 2 * 16 / 8
-
-        val outputStream = wavFile.outputStream()
-        outputStream.write("RIFF".toByteArray())
-        outputStream.write(intToByteArray(totalDataLen))
-        outputStream.write("WAVE".toByteArray())
-        outputStream.write("fmt ".toByteArray())
-        outputStream.write(intToByteArray(16))
-        outputStream.write(shortToByteArray(1)) // PCM 포맷
-        outputStream.write(shortToByteArray(2)) // 스테레오
-        outputStream.write(intToByteArray(44100)) // 샘플레이트
-        outputStream.write(intToByteArray(byteRate)) // 바이트레이트
-        outputStream.write(shortToByteArray(4)) // 블록 정렬
-        outputStream.write(shortToByteArray(16)) // 비트/샘플
-        outputStream.write("data".toByteArray())
-        outputStream.write(intToByteArray(pcmData.size))
-        outputStream.write(pcmData)
-        outputStream.close()
-    }
-
-    private fun intToByteArray(value: Int): ByteArray {
-        return ByteBuffer.allocate(4).putInt(value).array()
-    }
-
-    private fun shortToByteArray(value: Short): ByteArray {
-        return ByteBuffer.allocate(2).putShort(value).array()
+        // 임시 영상 파일 삭제 (선택적)
+        File(mVideoFileName!!).delete()
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -268,14 +284,30 @@ class FlutterScreenRecordingPlugin :
         channel.setMethodCallHandler(this)
     }
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        pluginBinding = null
+    }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activityBinding = binding
-        activityBinding!!.addActivityResultListener(this)
+        binding.addActivityResultListener { requestCode, resultCode, data ->
+            if (requestCode == SCREEN_RECORD_REQUEST_CODE) {
+                if (resultCode == Activity.RESULT_OK) {
+                    startRecordScreen(resultCode, data!!)
+                    _result.success(true)
+                } else {
+                    _result.success(false)
+                }
+                true
+            } else {
+                false
+            }
+        }
     }
 
-    override fun onDetachedFromActivity() {}
+    override fun onDetachedFromActivity() {
+        activityBinding = null
+    }
 
     override fun onDetachedFromActivityForConfigChanges() {}
 
