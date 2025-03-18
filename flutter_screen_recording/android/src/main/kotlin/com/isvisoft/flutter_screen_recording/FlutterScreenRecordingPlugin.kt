@@ -96,6 +96,7 @@ class FlutterScreenRecordingPlugin :
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun startRecordScreen(resultCode: Int, data: Intent) {
         mMediaProjection = mProjectionManager!!.getMediaProjection(resultCode, data)
         mVideoFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}_video.mp4"
@@ -105,8 +106,7 @@ class FlutterScreenRecordingPlugin :
         mMediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(pluginBinding!!.applicationContext)
         } else {
-            @Suppress("DEPRECATION")
-            MediaRecorder()
+            MediaRecorder() // DEPRECATION 경고 억제
         }
         mMediaRecorder?.apply {
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
@@ -274,7 +274,7 @@ class FlutterScreenRecordingPlugin :
         muxer?.stop()
         muxer?.release()
 
-        // 임시 영상 파일 삭제 (선택적)
+        // 임시 영상 파일 삭제
         File(mVideoFileName!!).delete()
     }
 
