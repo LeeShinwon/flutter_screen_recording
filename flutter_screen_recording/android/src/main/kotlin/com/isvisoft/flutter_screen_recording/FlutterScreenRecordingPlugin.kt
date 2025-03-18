@@ -300,7 +300,7 @@ class FlutterScreenRecordingPlugin :
             mMediaRecorder?.prepare()
             mMediaRecorder?.start()
 
-            startInternalAudioCapture()
+//            startInternalAudioCapture()
         } catch (e: Exception) {
             Log.d("--INIT-RECORDER", e.message + "")
             println("Error startRecordScreen")
