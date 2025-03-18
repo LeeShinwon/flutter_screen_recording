@@ -34,6 +34,8 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import java.io.FileOutputStream
+import java.io.File
+import java.nio.ByteBuffer
 
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
