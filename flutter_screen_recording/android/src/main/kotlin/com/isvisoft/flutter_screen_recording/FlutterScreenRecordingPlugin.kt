@@ -344,19 +344,8 @@ class FlutterScreenRecordingPlugin :
     private fun stopRecordScreen() {
         try {
             println("stopRecordScreen")
-            mMediaRecorder?.stop()
-            mMediaRecorder?.reset()
-            println("stopRecordScreen success")
 
-        } catch (e: Exception) {
-            Log.d("--INIT-RECORDER", e.message + "")
-            println("stopRecordScreen error")
-            println(e.message)
-
-        } finally {
-            stopScreenSharing()
-
-            // 🔹 내부 오디오 녹음 종료
+            // 🔹 내부 오디오 캡처 먼저 중지
             isRecordingAudio = false
             try {
                 audioRecordInternal?.stop()
@@ -372,8 +361,22 @@ class FlutterScreenRecordingPlugin :
             } catch (e: Exception) {
                 Log.e("ScreenRecording", "🚨 Error stopping audio encoder: ${e.message}")
             }
+
+            // 🔹 MediaRecorder 중지
+            if (mMediaRecorder != null) {
+                mMediaRecorder?.stop()  // 여기서 -1007 오류 발생 가능
+                mMediaRecorder?.reset()
+                println("stopRecordScreen success")
+            }
+
+        } catch (e: Exception) {
+            Log.e("ScreenRecording", "🚨 MediaRecorder stop failed: ${e.message}")
+            println("stopRecordScreen error")
+        } finally {
+            stopScreenSharing()
         }
     }
+
 
     private fun createVirtualDisplay(): VirtualDisplay? {
         try {
