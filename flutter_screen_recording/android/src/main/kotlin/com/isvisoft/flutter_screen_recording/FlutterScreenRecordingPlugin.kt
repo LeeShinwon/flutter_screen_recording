@@ -2,6 +2,7 @@ package com.isvisoft.flutter_screen_recording
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -33,7 +34,8 @@ class FlutterScreenRecordingPlugin :
     private var mProjectionManager: MediaProjectionManager? = null
     private var mMediaProjection: MediaProjection? = null
     private var mVirtualDisplay: VirtualDisplay? = null
-    private var mMediaRecorder: MediaRecorder? = null
+    @Suppress("DEPRECATION")
+    private var mMediaRecorder: MediaRecorder? = null // DEPRECATION 경고 억제
     private var audioRecordInternal: AudioRecord? = null
     private var audioEncoder: MediaCodec? = null
     private var muxer: MediaMuxer? = null
@@ -96,17 +98,16 @@ class FlutterScreenRecordingPlugin :
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun startRecordScreen(resultCode: Int, data: Intent) {
         mMediaProjection = mProjectionManager!!.getMediaProjection(resultCode, data)
-        mVideoFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}_video.mp4"
-        mFinalFileName = "${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath}/${videoName}.mp4"
+        mVideoFileName = "${pluginBinding!!.applicationContext.getExternalFilesDir(Environment.DIRECTORY_MOVIES)?.absolutePath}/${videoName}_video.mp4"
+        mFinalFileName = "${pluginBinding!!.applicationContext.getExternalFilesDir(Environment.DIRECTORY_MOVIES)?.absolutePath}/${videoName}.mp4"
 
         // 영상만 녹화
         mMediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(pluginBinding!!.applicationContext)
         } else {
-            MediaRecorder() // DEPRECATION 경고 억제
+            MediaRecorder() // DEPRECATION 경고는 변수 선언에서 억제됨
         }
         mMediaRecorder?.apply {
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
