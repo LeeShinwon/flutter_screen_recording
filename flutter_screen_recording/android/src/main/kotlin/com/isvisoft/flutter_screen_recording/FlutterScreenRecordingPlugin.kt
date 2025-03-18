@@ -151,16 +151,9 @@ class FlutterScreenRecordingPlugin :
         mVirtualDisplay?.release()
         audioRecordInternal?.stop()
         audioRecordInternal?.release()
-
-        val pcmFile = File(mFileName!!.replace(".mp4", ".pcm"))
-        val wavFile = File(mFileName!!.replace(".mp4", ".wav"))
-        convertPcmToWav(pcmFile, wavFile)
-
-        val outputFile = File(mFileName!!.replace(".mp4", "_final.mp4"))
-        mergeAudioVideo(File(mFileName!!), wavFile, outputFile)
     }
 
-    // 📌 🔹 `.pcm` → `.wav` 변환 추가
+    // 🔹 `.pcm` → `.wav` 변환 함수 추가
     private fun convertPcmToWav(pcmFile: File, wavFile: File) {
         val pcmData = pcmFile.readBytes()
         val totalDataLen = pcmData.size + 44 - 8
@@ -184,34 +177,37 @@ class FlutterScreenRecordingPlugin :
         outputStream.close()
     }
 
-    private fun mergeAudioVideo(videoFile: File, audioFile: File, outputFile: File) {
-        val mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val videoExtractor = MediaExtractor()
-        videoExtractor.setDataSource(videoFile.absolutePath)
-        val audioExtractor = MediaExtractor()
-        audioExtractor.setDataSource(audioFile.absolutePath)
+    // 📌 int → byte 변환
+    private fun intToByteArray(value: Int): ByteArray {
+        return ByteBuffer.allocate(4).putInt(value).array()
+    }
 
-        videoExtractor.selectTrack(0)
-        val videoTrackIndex = mediaMuxer.addTrack(videoExtractor.getTrackFormat(0))
-        audioExtractor.selectTrack(0)
-        val audioTrackIndex = mediaMuxer.addTrack(audioExtractor.getTrackFormat(0))
+    // 📌 short → byte 변환
+    private fun shortToByteArray(value: Short): ByteArray {
+        return ByteBuffer.allocate(2).putShort(value).array()
+    }
 
-        mediaMuxer.start()
+    // 📌 `onAttachedToEngine()` 추가
+    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        pluginBinding = binding
+        val channel = MethodChannel(binding.binaryMessenger, "flutter_screen_recording")
+        channel.setMethodCallHandler(this)
 
-        val buffer = ByteBuffer.allocate(1024 * 1024)
-        val bufferInfo = MediaCodec.BufferInfo()
+        mProjectionManager = ContextCompat.getSystemService(binding.applicationContext, MediaProjectionManager::class.java)
+            ?: throw Exception("MediaProjectionManager not found")
+    }
 
-        while (videoExtractor.readSampleData(buffer, 0) > 0) {
-            mediaMuxer.writeSampleData(videoTrackIndex, buffer, bufferInfo)
-            videoExtractor.advance()
-        }
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 
-        while (audioExtractor.readSampleData(buffer, 0) > 0) {
-            mediaMuxer.writeSampleData(audioTrackIndex, buffer, bufferInfo)
-            audioExtractor.advance()
-        }
+    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+        activityBinding = binding
+    }
 
-        mediaMuxer.stop()
-        mediaMuxer.release()
+    override fun onDetachedFromActivity() {}
+
+    override fun onDetachedFromActivityForConfigChanges() {}
+
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        activityBinding = binding
     }
 }
