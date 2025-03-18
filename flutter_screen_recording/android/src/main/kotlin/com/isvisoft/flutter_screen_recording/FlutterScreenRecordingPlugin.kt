@@ -160,25 +160,58 @@ class FlutterScreenRecordingPlugin :
         mergeAudioVideo(File(mFileName!!), wavFile, outputFile)
     }
 
-    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        pluginBinding = binding
-        mProjectionManager = ContextCompat.getSystemService(binding.applicationContext, MediaProjectionManager::class.java)
-            ?: throw Exception("MediaProjectionManager not found")
+    // 📌 🔹 `.pcm` → `.wav` 변환 추가
+    private fun convertPcmToWav(pcmFile: File, wavFile: File) {
+        val pcmData = pcmFile.readBytes()
+        val totalDataLen = pcmData.size + 44 - 8
+        val byteRate = 44100 * 2 * 16 / 8
+
+        val outputStream = wavFile.outputStream()
+        outputStream.write("RIFF".toByteArray())
+        outputStream.write(intToByteArray(totalDataLen))
+        outputStream.write("WAVE".toByteArray())
+        outputStream.write("fmt ".toByteArray())
+        outputStream.write(intToByteArray(16))
+        outputStream.write(shortToByteArray(1))
+        outputStream.write(shortToByteArray(2))
+        outputStream.write(intToByteArray(44100))
+        outputStream.write(intToByteArray(byteRate))
+        outputStream.write(shortToByteArray(4))
+        outputStream.write(shortToByteArray(16))
+        outputStream.write("data".toByteArray())
+        outputStream.write(intToByteArray(pcmData.size))
+        outputStream.write(pcmData)
+        outputStream.close()
     }
 
-    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        activityBinding = binding
-        val channel = MethodChannel(pluginBinding!!.binaryMessenger, "flutter_screen_recording")
-        channel.setMethodCallHandler(this)
-    }
+    private fun mergeAudioVideo(videoFile: File, audioFile: File, outputFile: File) {
+        val mediaMuxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        val videoExtractor = MediaExtractor()
+        videoExtractor.setDataSource(videoFile.absolutePath)
+        val audioExtractor = MediaExtractor()
+        audioExtractor.setDataSource(audioFile.absolutePath)
 
-    override fun onDetachedFromActivity() {}
+        videoExtractor.selectTrack(0)
+        val videoTrackIndex = mediaMuxer.addTrack(videoExtractor.getTrackFormat(0))
+        audioExtractor.selectTrack(0)
+        val audioTrackIndex = mediaMuxer.addTrack(audioExtractor.getTrackFormat(0))
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+        mediaMuxer.start()
 
-    override fun onDetachedFromActivityForConfigChanges() {}
+        val buffer = ByteBuffer.allocate(1024 * 1024)
+        val bufferInfo = MediaCodec.BufferInfo()
 
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        activityBinding = binding
+        while (videoExtractor.readSampleData(buffer, 0) > 0) {
+            mediaMuxer.writeSampleData(videoTrackIndex, buffer, bufferInfo)
+            videoExtractor.advance()
+        }
+
+        while (audioExtractor.readSampleData(buffer, 0) > 0) {
+            mediaMuxer.writeSampleData(audioTrackIndex, buffer, bufferInfo)
+            audioExtractor.advance()
+        }
+
+        mediaMuxer.stop()
+        mediaMuxer.release()
     }
 }
