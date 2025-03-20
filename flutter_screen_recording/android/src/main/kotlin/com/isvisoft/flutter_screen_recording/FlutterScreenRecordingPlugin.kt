@@ -24,20 +24,6 @@ import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
 import java.io.IOException
 
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioPlaybackCaptureConfiguration
-import android.media.AudioRecord
-import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
-import java.io.FileOutputStream
-import java.io.File
-import java.nio.ByteBuffer
-
-
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -76,13 +62,6 @@ class FlutterScreenRecordingPlugin :
 
     private var serviceConnection: ServiceConnection? = null
 
-    // 오디오 추가
-    private var audioRecordInternal: AudioRecord? = null
-    private var audioEncoder: MediaCodec? = null
-    private var audioFileName: String? = null
-    private val SAMPLE_RATE = 44100
-    private var isRecordingAudio = false
-
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
 
         val context = pluginBinding!!.applicationContext
@@ -98,12 +77,11 @@ class FlutterScreenRecordingPlugin :
                     override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
 
                         try {
+                            startRecordScreen()
                             mMediaProjectionCallback = MediaProjectionCallback()
                             mMediaProjection = mProjectionManager.getMediaProjection(resultCode, data!!)
                             mMediaProjection?.registerCallback(mMediaProjectionCallback!!, null)
                             mVirtualDisplay = createVirtualDisplay()
-
-                            startRecordScreen()
                             _result.success(true)
 
                         } catch (e: Throwable) {
@@ -199,99 +177,6 @@ class FlutterScreenRecordingPlugin :
         }
     }
 
-
-    private fun startInternalAudioCapture() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            Log.e("ScreenRecording", "🚨 Internal audio capture is only supported on Android 10+")
-            return
-        }
-
-        if (mMediaProjection == null) {
-            Log.e("ScreenRecording", "🚨 MediaProjection is null. Cannot start internal audio recording.")
-            return
-        }
-
-        try {
-            val BUFFER_SIZE = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_STEREO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-
-            if (BUFFER_SIZE == AudioRecord.ERROR_BAD_VALUE) {
-                Log.e("ScreenRecording", "🚨 Invalid AudioRecord buffer size")
-                return
-            }
-
-            val config = AudioPlaybackCaptureConfiguration.Builder(mMediaProjection!!)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)  // 미디어 오디오만 캡처
-                .build()
-
-            audioRecordInternal = AudioRecord.Builder()
-                .setAudioPlaybackCaptureConfig(config)
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                        .build()
-                )
-                .setBufferSizeInBytes(BUFFER_SIZE * 2)
-                .build()
-
-            // 🔹 오디오 파일 저장 경로 설정
-            audioFileName = pluginBinding!!.applicationContext.externalCacheDir?.absolutePath + "/$videoName.aac"
-
-            // 🔹 AAC 인코더 설정
-            audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm")
-            val audioFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", SAMPLE_RATE, 2)
-            audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
-            audioFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, BUFFER_SIZE)
-            audioEncoder?.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            audioEncoder?.start()
-
-            isRecordingAudio = true
-            audioRecordInternal?.startRecording()
-            Log.i("ScreenRecording", "🎤 Internal audio recording started")
-
-            // 🔹 PCM 데이터를 AAC로 변환 및 저장
-            Thread { encodeAudioToAAC() }.start()
-
-        } catch (e: Exception) {
-            Log.e("ScreenRecording", "🚨 Error starting internal audio recording: ${e.message}")
-        }
-    }
-
-
-    private fun encodeAudioToAAC() {
-        if (audioFileName.isNullOrEmpty()) {
-            Log.e("ScreenRecording", "🚨 Audio file name is null. Cannot encode audio.")
-            return
-        }
-
-        val buffer = ByteArray(1024)
-        var outputStream: FileOutputStream? = null
-
-        try {
-            outputStream = FileOutputStream(audioFileName)
-
-            while (isRecordingAudio) {
-                val read = audioRecordInternal?.read(buffer, 0, buffer.size) ?: 0
-                if (read > 0) {
-                    outputStream.write(buffer, 0, read)
-                }
-            }
-
-        } catch (e: IOException) {
-            Log.e("ScreenRecording", "🚨 Error writing audio file: ${e.message}")
-        } finally {
-            outputStream?.close()
-            Log.i("ScreenRecording", "✅ Internal audio recording saved: $audioFileName")
-        }
-    }
-
-
     private fun calculateResolution(metrics: DisplayMetrics) {
         // ✅ 원본 해상도 그대로 사용
         mDisplayHeight = metrics.heightPixels
@@ -299,6 +184,12 @@ class FlutterScreenRecordingPlugin :
 
         println("📌 Original Resolution: ${metrics.widthPixels} x ${metrics.heightPixels}")
         println("✅ Using Original Resolution for Recording: $mDisplayWidth x $mDisplayHeight")
+    }
+
+    fun createAudioPlaybackConfig(mediaProjection: MediaProjection): AudioPlaybackCaptureConfiguration {
+        return AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA) // 🎵 미디어 사운드 캡처
+            .build()
     }
 
     private fun startRecordScreen() {
@@ -311,6 +202,7 @@ class FlutterScreenRecordingPlugin :
                 mMediaRecorder = MediaRecorder()
             }
 
+            // 파일 저장 경로 설정
             try {
                 mFileName = if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
                     pluginBinding!!.applicationContext.externalCacheDir?.absolutePath
@@ -323,118 +215,106 @@ class FlutterScreenRecordingPlugin :
                 return
             }
 
+            // media recorder 기본 설정 (화면 녹화)
             mMediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            mMediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            mMediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             mMediaRecorder?.setOutputFile(mFileName)
             mMediaRecorder?.setVideoSize(mDisplayWidth, mDisplayHeight)
             mMediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             mMediaRecorder?.setVideoEncodingBitRate(5 * mDisplayWidth * mDisplayHeight)
             mMediaRecorder?.setVideoFrameRate(30)
 
+            // 내부 오디오 녹음  (Android 10 이상)
+            val audioPlaybackConfig = AudioPlaybackCaptureConfiguration.Builder(mMediaProjection!!)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA) // 미디어 오디오 캡처
+                .build()
+
+            val audioRecord = AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(audioPlaybackConfig)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(44100)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .build()
+                )
+                .setBufferSizeInBytes(AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT))
+                .build()
+
+            // 오디오 인코더(MediaCodec) 설정 (PCM → AAC 변환)
+            val audioFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 2)
+            audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+            audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+
+            val audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            audioEncoder.start()
+
+            // 내부 오디오 캡처 시작
+            audioRecord.startRecording()
+
+            // 오디오 데이터를 MediaCodec을 통해 인코딩 (실시간 변환)
+            Thread {
+                val buffer = ByteBuffer.allocateDirect(4096)
+                val bufferInfo = MediaCodec.BufferInfo()
+
+                while (true) {
+                    val size = audioRecord.read(buffer, buffer.capacity())
+                    if (size > 0) {
+                        val inputBufferIndex = audioEncoder.dequeueInputBuffer(10000)
+                        if (inputBufferIndex >= 0) {
+                            val inputBuffer = audioEncoder.getInputBuffer(inputBufferIndex)
+                            inputBuffer?.clear()
+                            inputBuffer?.put(buffer)
+                            audioEncoder.queueInputBuffer(inputBufferIndex, 0, size, System.nanoTime() / 1000, 0)
+                        }
+
+                        val outputBufferIndex = audioEncoder.dequeueOutputBuffer(bufferInfo, 10000)
+                        if (outputBufferIndex >= 0) {
+                            val encodedData = audioEncoder.getOutputBuffer(outputBufferIndex)
+                            encodedData?.let {
+                                // MP4 파일로 저장 (MediaMuxer 활용)
+                                mediaMuxer.writeSampleData(audioTrackIndex, it, bufferInfo)
+                            }
+                            audioEncoder.releaseOutputBuffer(outputBufferIndex, false)
+                        }
+                    }
+                }
+            }.start()
+
+
             mMediaRecorder?.prepare()
             mMediaRecorder?.start()
 
-            startInternalAudioCapture()
         } catch (e: Exception) {
             Log.d("--INIT-RECORDER", e.message + "")
             println("Error startRecordScreen")
             println(e.message)
         }
-
     }
 
     private fun stopRecordScreen() {
         try {
             println("stopRecordScreen")
-
-            // 🔹 내부 오디오 캡처 먼저 중지
-            isRecordingAudio = false
-            try {
-                audioRecordInternal?.stop()
-                audioRecordInternal?.release()
-                println("✅ Internal audio recording stopped successfully")
-            } catch (e: Exception) {
-                Log.e("ScreenRecording", "🚨 Error stopping internal audio: ${e.message}")
-            }
-
-            try {
-                audioEncoder?.stop()
-                audioEncoder?.release()
-            } catch (e: Exception) {
-                Log.e("ScreenRecording", "🚨 Error stopping audio encoder: ${e.message}")
-            }
-
-            // 🔹 MediaRecorder 중지 (오디오 먼저 중지한 후 실행)
-            if (mMediaRecorder != null) {
-                try {
-                    mMediaRecorder?.stop()
-                    mMediaRecorder?.reset()
-                    println("✅ stopRecordScreen success")
-                } catch (e: Exception) {
-                    Log.e("ScreenRecording", "🚨 MediaRecorder stop failed: ${e.message}")
-                }
-            }
+            mMediaRecorder?.stop()
+            mMediaRecorder?.reset()
+            audioRecord?.stop()
+            audioRecord?.release()
+            audioEncoder?.stop()
+            audioEncoder?.release()
+            mediaMuxer?.stop()
+            mediaMuxer?.release()
+            println("stopRecordScreen success")
 
         } catch (e: Exception) {
-            Log.e("ScreenRecording", "🚨 stopRecordScreen failed: ${e.message}")
+            Log.d("--INIT-RECORDER", e.message + "")
+            println("stopRecordScreen error")
+            println(e.message)
+
         } finally {
             stopScreenSharing()
-
-            // 🔹 백그라운드에서 오디오 파일 변환 실행
-            Thread {
-                finalizeAudioRecording()
-            }.start()
         }
     }
-
-
-    private fun finalizeAudioRecording() {
-        try {
-            val outputFile = File(audioFileName)
-            if (!outputFile.exists()) {
-                Log.e("ScreenRecording", "🚨 Audio file not found!")
-                return
-            }
-
-            val extractor = MediaExtractor()
-            extractor.setDataSource(audioFileName!!)  // 원본 .aac 파일
-
-            val format = extractor.getTrackFormat(0)
-            val muxer = MediaMuxer(audioFileName!!.replace(".aac", ".m4a"), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-
-            val trackIndex = muxer.addTrack(format)
-            muxer.start()
-
-            val buffer = ByteBuffer.allocate(1024 * 1024)
-            val bufferInfo = MediaCodec.BufferInfo()
-
-            extractor.selectTrack(0)
-            while (true) {
-                val sampleSize = extractor.readSampleData(buffer, 0)
-                if (sampleSize < 0) break
-
-                bufferInfo.offset = 0
-                bufferInfo.size = sampleSize
-                bufferInfo.presentationTimeUs = extractor.sampleTime
-                bufferInfo.flags = extractor.sampleFlags
-
-                muxer.writeSampleData(trackIndex, buffer, bufferInfo)
-                extractor.advance()
-            }
-
-            muxer.stop()
-            muxer.release()
-            extractor.release()
-
-            Log.i("ScreenRecording", "✅ Audio file properly formatted: ${audioFileName!!.replace(".aac", ".m4a")}")
-
-        } catch (e: Exception) {
-            Log.e("ScreenRecording", "🚨 Error formatting audio file: ${e.message}")
-        }
-    }
-
-
-
 
     private fun createVirtualDisplay(): VirtualDisplay? {
         try {
