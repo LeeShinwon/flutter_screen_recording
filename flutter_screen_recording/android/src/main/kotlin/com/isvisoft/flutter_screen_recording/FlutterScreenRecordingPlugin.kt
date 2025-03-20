@@ -7,7 +7,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.MediaRecorder
+import android.media.*
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -17,16 +17,17 @@ import android.util.DisplayMetrics
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import io.flutter.embedding.engine.plugins.FlutterPlugin
+import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
 import java.io.IOException
+import java.nio.ByteBuffer
 
-import io.flutter.embedding.engine.plugins.FlutterPlugin
-import io.flutter.embedding.engine.plugins.activity.ActivityAware
-import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 
 
 class FlutterScreenRecordingPlugin :
