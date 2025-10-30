@@ -152,6 +152,11 @@ class FlutterScreenRecordingPlugin :
     // 🔹 실제 녹화 시작
     private fun startRecordScreen(resultCode: Int, data: Intent) {
         mMediaProjection = mProjectionManager?.getMediaProjection(resultCode, data)
+
+        // ✅ 콜백 먼저 등록 (Android 14 필수)
+        val callback = MediaProjectionCallback()
+        mMediaProjection?.registerCallback(callback, null)
+
         val metrics = DisplayMetrics()
         activityBinding!!.activity.windowManager.defaultDisplay.getRealMetrics(metrics)
         val width = metrics.widthPixels
@@ -168,6 +173,7 @@ class FlutterScreenRecordingPlugin :
         prepareAudioRecord()
         prepareAudioEncoder()
 
+        // ✅ 콜백 등록 후에 가상 디스플레이 생성
         mVirtualDisplay = mMediaProjection?.createVirtualDisplay(
             "ScreenRecord",
             width, height, density,
@@ -177,6 +183,7 @@ class FlutterScreenRecordingPlugin :
 
         Log.d("FlutterScreenRecording", "✅ Recording started: ${outputFile.absolutePath}")
     }
+
 
     // 🔹 비디오 인코더 설정
     private fun prepareVideoEncoder(width: Int, height: Int, fps: Int, bitrate: Int) {
@@ -319,4 +326,12 @@ class FlutterScreenRecordingPlugin :
             Log.e("Muxer", "❌ Stop error: ${e.message}")
         }
     }
+
+    private inner class MediaProjectionCallback : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.d("MediaProjectionCallback", "MediaProjection stopped.")
+            stopRecordScreen()
+        }
+    }
+
 }
